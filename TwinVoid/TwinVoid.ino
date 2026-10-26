@@ -874,25 +874,17 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {}
 void applyPeerPose(const GamePacket &p) {
   remote.x = isHost ? CLIENT_WX : HOST_WX;
   player.x = isHost ? HOST_WX : CLIENT_WX;
-  
-  if (p.flags & 0x02) { 
-    remote.falling = true; 
-    remote.fallY = yFromNet(p.y); 
-  } else {
-    remote.falling = false;
-    remote.y = yFromNet(p.y);
-  }
 
-  if (p.flags & 0x04) {
-    remote.dead = true;
-    remote.falling = false;
-  } else {
-    remote.dead = false;
+  // Хост — авторитет по падению/смерти клиента (считает remote.hp).
+  // INPUT клиента НЕ должен перезаписывать remote.fallY и сбрасывать dead:
+  // иначе хост каждый кадр откатывает падение назад и клиент падает бесконечно.
+  if (!remote.falling && !remote.dead) {
+    remote.y = yFromNet(p.y);
   }
 
   remoteSeen = true;
   lastRemoteMs = millis();
-  
+
   if (p.flags & 0x01) {
     spawnBulletAt(remote.x + 40, remote.y, true, (uint8_t)(1 + p.senderGun));
   }
@@ -976,17 +968,16 @@ void processIncomingPacket(const GamePacket &pkt, const uint8_t *mac) {
     player.hp = pkt.remoteHp;
     bool clientFalling = (pkt.remoteFlags & 0x02) != 0;
     bool clientDead = (pkt.remoteFlags & 0x04) != 0;
-    if (clientDead) {
-      // Хост считает клиента погибшим
+    if (player.dead) {
+      // Уже мёртв: игнорируем falling (не откатываем падение и не «оживляемся»).
+      // Встаём только если хост реально оживил — у него HP снова > 0.
+      if (player.hp > 0) { player.dead = false; player.falling = false; }
+    } else if (clientDead) {
       player.dead = true;
       player.falling = false;
     } else if (clientFalling) {
-      // Хост считает клиента падающим
-      player.dead = false;
-      if (!player.falling) player.fallY = player.y;
-      player.falling = true;
+      if (!player.falling) { player.falling = true; player.fallY = player.y; }
     } else {
-      // Хост считает клиента живым — сбрасываем залипшие состояния
       player.dead = false;
       player.falling = false;
     }
@@ -3039,7 +3030,7 @@ void drawGame(bool coop) {
 
   if (!coop) {
     spr.print("HP:");
-    spr.print(player.hp);
+    spr.print(max(0, player.hp));
     spr.setCursor(SCREEN_WIDTH - 88, 3);
     if (bossActive) {
       spr.setTextColor(TFT_RED, TFT_BLACK);
@@ -3053,14 +3044,15 @@ void drawGame(bool coop) {
     }
   } else {
     spr.print("HP:");
-    spr.print(player.hp);
+    spr.print(max(0, player.hp));
     spr.setCursor(SCREEN_WIDTH / 3, 3);
     if (remote.falling || remote.dead) {
-      if (revivers > 0) spr.print("HOLD BOTH:REVIVE");
+      // на узком экране (240 px) длинная надпись наезжает на счётчик фрагов
+      if (revivers > 0) spr.print(SCREEN_WIDTH >= 300 ? "HOLD BOTH:REVIVE" : "HOLD BOTH!");
       else spr.print("P2 DOWN");
     } else {
       spr.print("P2 HP:");
-      spr.print(remote.hp);
+      spr.print(max(0, remote.hp));
     }
     spr.setCursor(SCREEN_WIDTH - 88, 3);
     if (bossActive) {
